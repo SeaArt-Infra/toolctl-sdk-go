@@ -21,6 +21,7 @@ Features:
 
 ## Documentation
 
+- [QUICK_TOOL_INTEGRATION.md](./QUICK_TOOL_INTEGRATION.md) - Chinese quick-start guide for exposing tools with the current SDK
 - [TOOL_RESPONSE_PROTOCOL.md](./TOOL_RESPONSE_PROTOCOL.md) - protocol spec for JSON, SSE, and polling responses
 
 ## Quick start
@@ -164,3 +165,4 @@ app.MustRegisterTool(toolctl.RegisterToolOptions{
 
 - `examples/basic_app/main.go`
 - `examples/proxy_app/main.go`
+- `QUICK_TOOL_INTEGRATION.md`
