@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type App struct {
@@ -21,6 +23,10 @@ type App struct {
 
 	mu    sync.RWMutex
 	tools map[string]*ToolSpec
+
+	resourceMonitor      *ResourceMonitor
+	activeToolRequests   int
+	activeToolRequestsMu sync.Mutex
 }
 
 func Start(config AppConfig) *App {
@@ -463,6 +469,47 @@ func (a *App) RegisterToGateway(ctx context.Context, opts RegisterToGatewayOptio
 	})
 }
 
+func (a *App) EnableResourceMonitoring(opts EnableResourceMonitoringOptions) (*ResourceMonitor, error) {
+	labels := cloneLabels(opts.Labels)
+	instanceID := opts.InstanceID
+	if instanceID == "" {
+		instanceID = fmt.Sprintf("%s-%s", a.title, newInstanceID())
+	}
+	monitor, err := NewResourceMonitor(ResourceMonitorOptions{
+		Config: MonitoringConfig{
+			ServiceName:        a.title,
+			Enabled:            opts.Enabled,
+			Interval:           opts.Interval,
+			InstanceID:         instanceID,
+			Labels:             labels,
+			PublishImmediately: opts.PublishImmediately,
+			StatusProvider: func() int {
+				return a.resourceMonitorStatus(labels)
+			},
+		},
+		Publisher: opts.Publisher,
+		Publish:   opts.Publish,
+		Logger:    opts.Logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	a.resourceMonitor = monitor
+	a.mu.Unlock()
+	monitor.Start(context.Background())
+	return monitor, nil
+}
+
+func (a *App) StopResourceMonitoring(timeout time.Duration) {
+	a.mu.RLock()
+	monitor := a.resourceMonitor
+	a.mu.RUnlock()
+	if monitor != nil {
+		monitor.Stop(timeout)
+	}
+}
+
 func (a *App) Run(host string, port int) error {
 	if host == "" {
 		host = "0.0.0.0"
@@ -570,6 +617,13 @@ func (a *App) handleTool(w http.ResponseWriter, r *http.Request, spec *ToolSpec)
 		return
 	}
 
+	requestTracked := a.beginToolRequest()
+	defer func() {
+		if requestTracked {
+			a.endToolRequest()
+		}
+	}()
+
 	if spec.ResponseMode == "sse" {
 		a.handleSSETool(w, r, spec, payload, taskID)
 		return
@@ -652,6 +706,41 @@ func (a *App) handleToolError(w http.ResponseWriter, spec *ToolSpec, taskID stri
 		Code:     errorCodeFor(err),
 		Message:  err.Error(),
 	}))
+}
+
+func (a *App) beginToolRequest() bool {
+	a.mu.RLock()
+	monitor := a.resourceMonitor
+	a.mu.RUnlock()
+	if monitor == nil || !monitor.Enabled() {
+		return false
+	}
+	a.activeToolRequestsMu.Lock()
+	a.activeToolRequests++
+	a.activeToolRequestsMu.Unlock()
+	return true
+}
+
+func (a *App) endToolRequest() {
+	a.activeToolRequestsMu.Lock()
+	if a.activeToolRequests > 0 {
+		a.activeToolRequests--
+	}
+	a.activeToolRequestsMu.Unlock()
+}
+
+func (a *App) resourceMonitorStatus(labels map[string]string) int {
+	if rawStatus := labels["status"]; rawStatus != "" {
+		if status, err := strconv.Atoi(rawStatus); err == nil {
+			return status
+		}
+	}
+	a.activeToolRequestsMu.Lock()
+	defer a.activeToolRequestsMu.Unlock()
+	if a.activeToolRequests > 0 {
+		return MACHINE_STATUS_BUSY
+	}
+	return MACHINE_STATUS_IDLE
 }
 
 func (a *App) buildOpenAPI() map[string]any {

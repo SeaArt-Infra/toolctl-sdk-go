@@ -2,6 +2,11 @@ package toolctl
 
 import "encoding/json"
 
+// Bool returns a pointer to value for option structs that use optional booleans.
+func Bool(value bool) *bool {
+	return &value
+}
+
 func cloneMap(input map[string]any) map[string]any {
 	if input == nil {
 		return nil

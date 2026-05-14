@@ -2,7 +2,9 @@ package toolctl
 
 import (
 	"context"
+	"log"
 	"net/url"
+	"time"
 )
 
 type HandlerFunc func(context.Context, map[string]any) (any, error)
@@ -213,6 +215,17 @@ type RegisterToGatewayOptions struct {
 	TimeoutSeconds float64
 	RetryCount     int
 	RetryDelay     float64
+}
+
+type EnableResourceMonitoringOptions struct {
+	Publisher          MetricsPublisher
+	Publish            PublishFn
+	Enabled            *bool
+	Interval           time.Duration
+	InstanceID         string
+	Labels             map[string]string
+	PublishImmediately bool
+	Logger             *log.Logger
 }
 
 type LoadOpenAPIOptions struct {

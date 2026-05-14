@@ -18,6 +18,7 @@ Features:
 - gateway registration payload export
 - proxy auth, retry, and TLS controls
 - optional SSE response mode for local and proxy tools
+- optional resource heartbeat monitoring with an enable switch
 
 ## Documentation
 
@@ -158,6 +159,38 @@ app.MustRegisterTool(toolctl.RegisterToolOptions{
 	Handler: func(_ context.Context, _ map[string]any) (any, error) {
 		return map[string]any{"ok": true}, nil
 	},
+})
+```
+
+## Resource monitoring
+
+`toolctl-sdk-go` can publish comfy-agent style heartbeat payloads. The payload includes scheduling fields such as `id`, `ip`, `routes`, `send_time`, `machine_id`, `status`, `category`, `task_url`, `instance_group`, `express`, and `task_express_url`, plus CPU, memory, process, platform, and host metadata. The default interval is 5 seconds.
+
+For an `App`, enable monitoring before `Run`:
+
+```go
+monitor, err := app.EnableResourceMonitoring(toolctl.EnableResourceMonitoringOptions{
+	Publish: func(payload map[string]any) error {
+		// Publish to Pub/Sub, Kafka, HTTP, logs, etc.
+		return nil
+	},
+	PublishImmediately: true,
+})
+if err != nil {
+	log.Fatal(err)
+}
+defer monitor.Stop(5 * time.Second)
+```
+
+When monitoring is enabled, app heartbeats report `MACHINE_STATUS_BUSY` while a tool request is active and `MACHINE_STATUS_IDLE` otherwise. Set `Enabled: toolctl.Bool(false)` to keep monitoring configured but inactive; disabled monitors do not start the heartbeat goroutine, publish metrics, or require a publisher.
+
+You can also start a standalone monitor:
+
+```go
+monitor, err := toolctl.StartResourceMonitor(context.Background(), toolctl.StartResourceMonitorOptions{
+	ServiceName:        "video-tools",
+	Publish:            publishHeartbeat,
+	PublishImmediately: true,
 })
 ```
 
