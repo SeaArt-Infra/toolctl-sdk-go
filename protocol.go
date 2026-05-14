@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"reflect"
 	"time"
 )
@@ -23,6 +24,14 @@ var ToolEventTypes = map[string]struct{}{
 	"tool.cancelled":   {},
 }
 
+var toolEventStatus = map[string]string{
+	"tool.created":     "pending",
+	"tool.in_progress": "in_progress",
+	"tool.completed":   "completed",
+	"tool.failed":      "failed",
+	"tool.cancelled":   "cancelled",
+}
+
 func NewTaskID() string {
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
@@ -32,10 +41,10 @@ func NewTaskID() string {
 }
 
 func TextOutput(content string) map[string]any {
-	return map[string]any{
-		"type":    "text",
-		"content": content,
-	}
+	return FileOutput("file", "data:text/plain;charset=utf-8,"+url.QueryEscape(content), map[string]any{
+		"content_type": "text/plain",
+		"filename":     "output.txt",
+	})
 }
 
 func FileOutput(outputType, resourceURL string, extra map[string]any) map[string]any {
@@ -52,16 +61,11 @@ func FileOutput(outputType, resourceURL string, extra map[string]any) map[string
 }
 
 func Created(opts CreatedOptions) map[string]any {
-	createdAt := opts.CreatedAt
-	if createdAt == 0 {
-		createdAt = time.Now().Unix()
-	}
 	tool := cleanMap(map[string]any{
-		"id":         opts.TaskID,
-		"name":       opts.ToolName,
-		"status":     "created",
-		"created_at": createdAt,
-		"metadata":   opts.Metadata,
+		"id":       opts.TaskID,
+		"name":     opts.ToolName,
+		"status":   "pending",
+		"metadata": opts.Metadata,
 	})
 	return map[string]any{"type": "tool.created", "tool": tool}
 }
@@ -97,7 +101,7 @@ func Completed(opts CompletedOptions) map[string]any {
 func Failed(opts FailedOptions) map[string]any {
 	return map[string]any{
 		"type": "tool.failed",
-		"tool": map[string]any{
+		"tool": cleanMap(map[string]any{
 			"id":     opts.TaskID,
 			"name":   opts.ToolName,
 			"status": "failed",
@@ -106,23 +110,21 @@ func Failed(opts FailedOptions) map[string]any {
 				"message": opts.Message,
 				"details": opts.Details,
 			}),
-		},
+			"metadata": opts.Metadata,
+			"usage":    opts.Usage,
+		}),
 	}
 }
 
 func Cancelled(opts CancelledOptions) map[string]any {
-	reason := opts.Reason
-	if reason == "" {
-		reason = "user_cancelled"
-	}
 	return map[string]any{
 		"type": "tool.cancelled",
-		"tool": map[string]any{
+		"tool": cleanMap(map[string]any{
 			"id":     opts.TaskID,
 			"name":   opts.ToolName,
 			"status": "cancelled",
-			"reason": reason,
-		},
+			"reason": blankToNil(opts.Reason),
+		}),
 	}
 }
 
@@ -155,9 +157,22 @@ func EnsureToolEvent(payload map[string]any, toolName, taskID string) map[string
 	if _, ok := clonedTool["name"]; !ok {
 		clonedTool["name"] = toolName
 	}
-	if _, ok := clonedTool["status"]; !ok {
-		if eventType, ok := cloned["type"].(string); ok {
-			clonedTool["status"] = trimEventPrefix(eventType)
+	if eventType, ok := cloned["type"].(string); ok {
+		if status, ok := toolEventStatus[eventType]; ok {
+			clonedTool["status"] = status
+		}
+		if eventType == "tool.completed" {
+			var normalizedOutputs []any
+			switch outputs := clonedTool["outputs"].(type) {
+			case []any:
+				normalizedOutputs = make([]any, 0, len(outputs))
+				for _, output := range outputs {
+					normalizedOutputs = append(normalizedOutputs, normalizeOutput(output))
+				}
+			case nil:
+				normalizedOutputs = []any{}
+			}
+			clonedTool["outputs"] = normalizedOutputs
 		}
 	}
 	cloned["tool"] = clonedTool
@@ -172,7 +187,7 @@ func NormalizeJSONResult(result any, toolName, taskID string) map[string]any {
 		return Completed(CompletedOptions{
 			ToolName: toolName,
 			TaskID:   taskID,
-			Outputs:  []any{TextOutput("null")},
+			Outputs:  []any{},
 			Metadata: map[string]any{"result": nil},
 		})
 	}
@@ -198,7 +213,8 @@ func NormalizeJSONResult(result any, toolName, taskID string) map[string]any {
 		return Completed(CompletedOptions{
 			ToolName: toolName,
 			TaskID:   taskID,
-			Outputs:  []any{TextOutput(text)},
+			Outputs:  []any{},
+			Metadata: map[string]any{"result": text},
 		})
 	}
 	if payload, ok := result.(map[string]any); ok {
@@ -239,7 +255,7 @@ func NormalizeJSONResult(result any, toolName, taskID string) map[string]any {
 		return Completed(CompletedOptions{
 			ToolName: toolName,
 			TaskID:   taskID,
-			Outputs:  []any{TextOutput(mustJSON(payload))},
+			Outputs:  []any{},
 			Metadata: map[string]any{"result": payload},
 		})
 	}
@@ -247,14 +263,14 @@ func NormalizeJSONResult(result any, toolName, taskID string) map[string]any {
 		return Completed(CompletedOptions{
 			ToolName: toolName,
 			TaskID:   taskID,
-			Outputs:  []any{TextOutput(mustJSON(list))},
+			Outputs:  []any{},
 			Metadata: map[string]any{"result": list},
 		})
 	}
 	return Completed(CompletedOptions{
 		ToolName: toolName,
 		TaskID:   taskID,
-		Outputs:  []any{TextOutput(mustJSON(result))},
+		Outputs:  []any{},
 		Metadata: map[string]any{"result": result},
 	})
 }
@@ -272,17 +288,15 @@ func ProtocolResponseSchema() map[string]any {
 				"type":     "object",
 				"required": []string{"id", "name", "status"},
 				"properties": map[string]any{
-					"id":         map[string]any{"type": "string"},
-					"name":       map[string]any{"type": "string"},
-					"status":     map[string]any{"type": "string"},
-					"created_at": map[string]any{"type": "integer"},
-					"progress":   map[string]any{"type": "integer"},
-					"message":    map[string]any{"type": "string"},
-					"reason":     map[string]any{"type": "string"},
-					"outputs":    map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
-					"usage":      map[string]any{"type": "object"},
-					"metadata":   map[string]any{"type": "object"},
-					"error":      map[string]any{"type": "object"},
+					"id":       map[string]any{"type": "string"},
+					"name":     map[string]any{"type": "string"},
+					"status":   map[string]any{"type": "string"},
+					"progress": map[string]any{"type": "number"},
+					"message":  map[string]any{"type": "string"},
+					"outputs":  map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+					"usage":    map[string]any{"type": "object"},
+					"metadata": map[string]any{"type": "object"},
+					"error":    map[string]any{"type": "object"},
 				},
 			},
 		},
@@ -299,6 +313,21 @@ func normalizeOutput(output any) any {
 		}
 		return structToMap(*value)
 	case map[string]any:
+		if outputType, ok := value["type"].(string); ok && outputType == "text" {
+			content, _ := value["content"].(string)
+			extra := cloneMap(value)
+			delete(extra, "type")
+			delete(extra, "content")
+			contentType, _ := extra["content_type"].(string)
+			if contentType == "" {
+				extra["content_type"] = "text/plain"
+			}
+			filename, _ := extra["filename"].(string)
+			if filename == "" {
+				extra["filename"] = "output.txt"
+			}
+			return FileOutput("file", "data:text/plain;charset=utf-8,"+url.QueryEscape(content), extra)
+		}
 		return cleanMap(value)
 	default:
 		return output

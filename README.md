@@ -77,12 +77,7 @@ Response:
     "id": "task_xxx",
     "name": "ping",
     "status": "completed",
-    "outputs": [
-      {
-        "type": "text",
-        "content": "{\"ok\":true,\"payload\":{\"message\":\"hello\"}}"
-      }
-    ],
+    "outputs": [],
     "metadata": {
       "result": {
         "ok": true,
@@ -133,13 +128,14 @@ app.MustRegisterSSETool(toolctl.RegisterSSEToolOptions{
 			Progress: &progress,
 			Message:  payload["message"].(string),
 		})); err != nil {
-			return err
-		}
-		return writer.Write(toolctl.Completed(toolctl.CompletedOptions{
-			ToolName: "stream_ping",
-			TaskID:   "task_stream_ping",
-			Outputs:  []any{toolctl.TextOutput("ok")},
-		}))
+		return err
+	}
+	return writer.Write(toolctl.Completed(toolctl.CompletedOptions{
+		ToolName: "stream_ping",
+		TaskID:   "task_stream_ping",
+		Outputs:  []any{},
+		Metadata: map[string]any{"result": "ok"},
+	}))
 	},
 })
 ```

@@ -258,6 +258,8 @@ type FailedOptions struct {
 	Code     string
 	Message  string
 	Details  map[string]any
+	Metadata map[string]any
+	Usage    map[string]any
 }
 
 type CancelledOptions struct {

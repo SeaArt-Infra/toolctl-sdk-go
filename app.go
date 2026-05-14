@@ -599,6 +599,12 @@ func (a *App) handleSSETool(w http.ResponseWriter, r *http.Request, spec *ToolSp
 		return
 	}
 	writer := &httpStreamWriter{w: w, flusher: flusher, spec: spec, taskID: taskID}
+	if spec.ProtocolMode != "passthrough" {
+		if err := writer.Write(Created(CreatedOptions{ToolName: spec.Name, TaskID: taskID})); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 
 	var err error
 	if spec.StreamHandler != nil {
@@ -771,16 +777,12 @@ func formatSSEEvent(item any, spec *ToolSpec, taskID string) (string, error) {
 		if spec.ProtocolMode == "passthrough" {
 			return "data: " + value + "\n\n", nil
 		}
-		payload := Completed(CompletedOptions{
-			ToolName: spec.Name,
-			TaskID:   taskID,
-			Outputs:  []any{TextOutput(value)},
-		})
-		return "event: " + payload["type"].(string) + "\ndata: " + mustJSON(payload) + "\n\n", nil
+		payload := NormalizeJSONResult(value, spec.Name, taskID)
+		return serializeToolSSEEvent(payload), nil
 	case map[string]any:
 		if spec.ProtocolMode != "passthrough" && IsToolEvent(value) {
 			payload := EnsureToolEvent(value, spec.Name, taskID)
-			return "event: " + payload["type"].(string) + "\ndata: " + mustJSON(payload) + "\n\n", nil
+			return serializeToolSSEEvent(payload), nil
 		}
 		if hasSSEKeys(value) {
 			var parts []string
@@ -812,14 +814,18 @@ func formatSSEEvent(item any, spec *ToolSpec, taskID string) (string, error) {
 			return "data: " + mustJSON(value) + "\n\n", nil
 		}
 		payload := NormalizeJSONResult(value, spec.Name, taskID)
-		return "event: " + payload["type"].(string) + "\ndata: " + mustJSON(payload) + "\n\n", nil
+		return serializeToolSSEEvent(payload), nil
 	default:
 		if spec.ProtocolMode == "passthrough" {
 			return "data: " + mustJSON(value) + "\n\n", nil
 		}
 		payload := NormalizeJSONResult(value, spec.Name, taskID)
-		return "event: " + payload["type"].(string) + "\ndata: " + mustJSON(payload) + "\n\n", nil
+		return serializeToolSSEEvent(payload), nil
 	}
+}
+
+func serializeToolSSEEvent(payload map[string]any) string {
+	return "data: " + mustJSON(payload) + "\n\n"
 }
 
 func hasSSEKeys(value map[string]any) bool {

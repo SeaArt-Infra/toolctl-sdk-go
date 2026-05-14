@@ -50,9 +50,8 @@ func TestRegisterToolAndCallRoute(t *testing.T) {
 		t.Fatalf("unexpected name: %#v", tool["name"])
 	}
 	outputs := tool["outputs"].([]any)
-	first := outputs[0].(map[string]any)
-	if first["type"] != "text" {
-		t.Fatalf("unexpected output type: %#v", first["type"])
+	if len(outputs) != 0 {
+		t.Fatalf("unexpected outputs: %#v", outputs)
 	}
 	metadata := tool["metadata"].(map[string]any)
 	result := metadata["result"].(map[string]any)
@@ -169,7 +168,8 @@ func TestRegisterSSETool(t *testing.T) {
 			return writer.Write(Completed(CompletedOptions{
 				ToolName: "stream_ping",
 				TaskID:   "task_stream_ping",
-				Outputs:  []any{TextOutput("ok")},
+				Outputs:  []any{},
+				Metadata: map[string]any{"result": "ok"},
 			}))
 		},
 	})
@@ -185,10 +185,13 @@ func TestRegisterSSETool(t *testing.T) {
 		t.Fatalf("unexpected content type: %q", contentType)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "event: tool.in_progress") {
+	if !strings.Contains(body, `"type":"tool.created"`) {
+		t.Fatalf("missing created event: %s", body)
+	}
+	if !strings.Contains(body, `"type":"tool.in_progress"`) {
 		t.Fatalf("missing in_progress event: %s", body)
 	}
-	if !strings.Contains(body, "event: tool.completed") {
+	if !strings.Contains(body, `"type":"tool.completed"`) {
 		t.Fatalf("missing completed event: %s", body)
 	}
 	if !strings.Contains(body, "data: [DONE]") {
@@ -200,7 +203,7 @@ func TestRegisterProxySSETool(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("event: tool.in_progress\ndata: {\"type\":\"tool.in_progress\",\"tool\":{\"id\":\"task_1\",\"name\":\"stream_video_status\",\"status\":\"in_progress\",\"progress\":50}}\n\n"))
-		_, _ = w.Write([]byte("event: tool.completed\ndata: {\"type\":\"tool.completed\",\"tool\":{\"id\":\"task_1\",\"name\":\"stream_video_status\",\"status\":\"completed\",\"outputs\":[{\"type\":\"text\",\"content\":\"ok\"}]}}\n\n"))
+		_, _ = w.Write([]byte("event: tool.completed\ndata: {\"type\":\"tool.completed\",\"tool\":{\"id\":\"task_1\",\"name\":\"stream_video_status\",\"status\":\"completed\",\"outputs\":[],\"metadata\":{\"result\":\"ok\"}}}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer upstream.Close()
@@ -220,6 +223,9 @@ func TestRegisterProxySSETool(t *testing.T) {
 	app.ServeHTTP(rec, req)
 
 	body := rec.Body.String()
+	if !strings.Contains(body, `"type":"tool.created"`) {
+		t.Fatalf("missing created event: %s", body)
+	}
 	if !strings.Contains(body, "event: tool.in_progress") {
 		t.Fatalf("missing in_progress event: %s", body)
 	}
