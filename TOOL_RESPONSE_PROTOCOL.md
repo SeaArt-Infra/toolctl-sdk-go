@@ -324,58 +324,54 @@ Response:
 
 SSE 处理逻辑应以终态事件为准，并保留最后一个终态事件作为最终结果：
 
-```python
-TOOL_TERMINAL_EVENTS = frozenset({
-    "tool.completed",
-    "tool.failed",
-    "tool.cancelled",
-})
+```go
+var finalResult map[string]any
 
-final_result = None
+for event := range sseStream {
+	eventType, _ := event["type"].(string)
 
-for event in sse_stream:
-    event_type = event.get("type")
+	if _, ok := toolctl.ToolTerminalEvents[eventType]; ok {
+		finalResult = event
+		continue
+	}
 
-    if event_type in TOOL_TERMINAL_EVENTS:
-        final_result = event
-        continue
+	if _, ok := toolctl.ToolEventTypes[eventType]; ok {
+		continue
+	}
+}
 
-    if event_type in {"tool.created", "tool.in_progress"}:
-        continue
-
-return final_result
+return finalResult
 ```
 
 ### 内置工具适配
 
 将 SDK 或第三方任务对象转换为协议格式时，应优先满足本协议要求的最小字段：
 
-```python
-def _task_to_response(task: Task, tool_name: str) -> dict:
-    if task.status == "completed":
-        return {
-            "type": "tool.completed",
-            "tool": {
-                "id": task.id,
-                "name": tool_name,
-                "status": "completed",
-                "outputs": [
-                    {"type": _infer_output_type(url), "url": url}
-                    for url in task.urls()
-                ],
-                "metadata": {"model": task.model},
-            },
-        }
+```go
+type Task struct {
+	ID      string
+	Status  string
+	Model   string
+	Outputs []any
+	Error   string
+}
 
-    return {
-        "type": "tool.failed",
-        "tool": {
-            "id": task.id,
-            "name": tool_name,
-            "status": "failed",
-            "error": {"message": str(task.error)},
-        },
-    }
+func taskToResponse(task Task, toolName string) map[string]any {
+	if task.Status == "completed" {
+		return toolctl.Completed(toolctl.CompletedOptions{
+			ToolName: toolName,
+			TaskID:   task.ID,
+			Outputs:  task.Outputs,
+			Metadata: map[string]any{"model": task.Model},
+		})
+	}
+
+	return toolctl.Failed(toolctl.FailedOptions{
+		ToolName: toolName,
+		TaskID:   task.ID,
+		Message:  task.Error,
+	})
+}
 ```
 
 ## 与 Agent 事件协议的关系
