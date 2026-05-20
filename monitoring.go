@@ -314,6 +314,12 @@ func (c *SystemMetricsCollector) Collect() map[string]any {
 	taskExpressURL := c.label([]string{"task_express_url", "change_partition_url"}, routeURL(ip, port, modeAPI))
 	hostname, _ := os.Hostname()
 
+	cpuPercent := c.systemCPUPercent()
+	var memoryPercent any
+	if metrics, ok := linuxMemoryMetrics(); ok {
+		memoryPercent = metrics["used_percent"]
+	}
+
 	payload := map[string]any{
 		"id": machineID,
 		"ip": ip,
@@ -334,24 +340,10 @@ func (c *SystemMetricsCollector) Collect() map[string]any {
 		"cloud":            c.label([]string{"cloud"}, ""),
 		"host_id":          c.label([]string{"host_id"}, ""),
 		"partition":        c.label([]string{"partition"}, ""),
-		"cpu": map[string]any{
-			"percent":  c.systemCPUPercent(),
-			"load_avg": loadAverage(),
-			"count":    runtime.NumCPU(),
-		},
-		"memory":      memoryMetrics(),
-		"process":     processMetrics(now, c.startedAt),
-		"instance_id": c.instanceID,
-		"platform": map[string]any{
-			"system":     runtime.GOOS,
-			"release":    "",
-			"machine":    runtime.GOARCH,
-			"go_version": runtime.Version(),
-		},
-		"hostname": hostname,
-	}
-	if len(c.labels) > 0 {
-		payload["labels"] = cloneLabels(c.labels)
+		"cpu_percent":      cpuPercent,
+		"memory_percent":   memoryPercent,
+		"instance_id":      c.instanceID,
+		"hostname":         hostname,
 	}
 	return payload
 }
