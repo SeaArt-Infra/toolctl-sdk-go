@@ -1,11 +1,20 @@
 package toolctl
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"runtime"
 	"strconv"
@@ -574,4 +583,244 @@ func loadAverage() any {
 
 func round2(value float64) float64 {
 	return float64(int(value*100+0.5)) / 100
+}
+
+// PubSubMetricsPublisher publishes metrics to Google Cloud Pub/Sub via the REST API.
+// Authenticates with a service account credentials JSON (raw JSON or base64-encoded).
+// No external dependencies — uses only the Go standard library.
+type PubSubMetricsPublisher struct {
+	topicPath             string
+	credentialsJSON       string
+	publishTimeoutSeconds float64
+	httpClient            *http.Client
+	mu                    sync.Mutex
+	accessToken           string
+	tokenExpiry           time.Time
+}
+
+// PubSubMetricsPublisherOptions configures a PubSubMetricsPublisher.
+type PubSubMetricsPublisherOptions struct {
+	// Topic is a full Pub/Sub path ("projects/PROJECT/topics/TOPIC")
+	// or a short topic name when ProjectID is also set.
+	Topic string
+	// CredentialsJSON is the service account JSON as a raw or base64-encoded string.
+	// If empty, the GCE metadata server is used for token acquisition.
+	CredentialsJSON string
+	// ProjectID is only needed when Topic is not a full path.
+	ProjectID string
+	// PublishTimeoutSeconds is the per-request timeout. Defaults to 30.
+	PublishTimeoutSeconds float64
+}
+
+type pubsubServiceAccount struct {
+	ProjectID   string `json:"project_id"`
+	PrivateKey  string `json:"private_key"`
+	ClientEmail string `json:"client_email"`
+	TokenURI    string `json:"token_uri"`
+}
+
+// NewPubSubMetricsPublisher creates a PubSubMetricsPublisher.
+func NewPubSubMetricsPublisher(opts PubSubMetricsPublisherOptions) (*PubSubMetricsPublisher, error) {
+	if opts.Topic == "" {
+		return nil, fmt.Errorf("topic is required for PubSubMetricsPublisher")
+	}
+	timeout := opts.PublishTimeoutSeconds
+	if timeout <= 0 {
+		timeout = 30
+	}
+	topicPath := opts.Topic
+	if !strings.HasPrefix(topicPath, "projects/") {
+		if opts.ProjectID == "" {
+			return nil, fmt.Errorf("project_id is required when topic is not a full path")
+		}
+		topicPath = fmt.Sprintf("projects/%s/topics/%s", opts.ProjectID, opts.Topic)
+	}
+	credJSON := opts.CredentialsJSON
+	if credJSON != "" {
+		payload := strings.TrimSpace(credJSON)
+		if !strings.HasPrefix(payload, "{") {
+			decoded, err := base64.StdEncoding.DecodeString(payload)
+			if err != nil {
+				return nil, fmt.Errorf("credentials_json is not valid base64: %w", err)
+			}
+			credJSON = string(decoded)
+		}
+	}
+	return &PubSubMetricsPublisher{
+		topicPath:             topicPath,
+		credentialsJSON:       credJSON,
+		publishTimeoutSeconds: timeout,
+		httpClient:            &http.Client{Timeout: time.Duration(timeout * float64(time.Second))},
+	}, nil
+}
+
+// Publish implements MetricsPublisher.
+func (p *PubSubMetricsPublisher) Publish(ctx context.Context, data []byte, attributes map[string]string, orderingKey string) (any, error) {
+	token, err := p.getAccessToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("pubsub: get access token: %w", err)
+	}
+	msg := map[string]any{
+		"data":       base64.StdEncoding.EncodeToString(data),
+		"attributes": attributes,
+	}
+	if orderingKey != "" {
+		msg["orderingKey"] = orderingKey
+	}
+	body, err := json.Marshal(map[string]any{"messages": []any{msg}})
+	if err != nil {
+		return nil, err
+	}
+	url := fmt.Sprintf("https://pubsub.googleapis.com/v1/%s:publish", p.topicPath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("pubsub publish failed [%d]: %s", resp.StatusCode, string(respBody))
+	}
+	var result map[string]any
+	_ = json.Unmarshal(respBody, &result)
+	return result, nil
+}
+
+func (p *PubSubMetricsPublisher) getAccessToken(ctx context.Context) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.accessToken != "" && time.Now().Before(p.tokenExpiry) {
+		return p.accessToken, nil
+	}
+	if p.credentialsJSON != "" {
+		token, expiry, err := p.fetchServiceAccountToken(ctx)
+		if err != nil {
+			return "", err
+		}
+		p.accessToken = token
+		p.tokenExpiry = expiry
+		return token, nil
+	}
+	token, expiry, err := fetchMetadataToken(ctx, p.httpClient)
+	if err != nil {
+		return "", err
+	}
+	p.accessToken = token
+	p.tokenExpiry = expiry
+	return token, nil
+}
+
+func (p *PubSubMetricsPublisher) fetchServiceAccountToken(ctx context.Context) (string, time.Time, error) {
+	var sa pubsubServiceAccount
+	if err := json.Unmarshal([]byte(p.credentialsJSON), &sa); err != nil {
+		return "", time.Time{}, fmt.Errorf("parse service account JSON: %w", err)
+	}
+	tokenURI := sa.TokenURI
+	if tokenURI == "" {
+		tokenURI = "https://oauth2.googleapis.com/token"
+	}
+	now := time.Now()
+	exp := now.Add(3600 * time.Second)
+	headerJSON, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT"})
+	claimsJSON, _ := json.Marshal(map[string]any{
+		"iss":   sa.ClientEmail,
+		"sub":   sa.ClientEmail,
+		"scope": "https://www.googleapis.com/auth/pubsub",
+		"aud":   tokenURI,
+		"iat":   now.Unix(),
+		"exp":   exp.Unix(),
+	})
+	sigInput := base64.RawURLEncoding.EncodeToString(headerJSON) + "." + base64.RawURLEncoding.EncodeToString(claimsJSON)
+	sig, err := rsaSign([]byte(sigInput), sa.PrivateKey)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("sign JWT: %w", err)
+	}
+	jwt := sigInput + "." + base64.RawURLEncoding.EncodeToString(sig)
+	payload := "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=" + jwt
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURI, strings.NewReader(payload))
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return "", time.Time{}, fmt.Errorf("token fetch failed [%d]: %s", resp.StatusCode, string(body))
+	}
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return "", time.Time{}, fmt.Errorf("parse token response: %w", err)
+	}
+	expiry := time.Now().Add(time.Duration(tokenResp.ExpiresIn-60) * time.Second)
+	return tokenResp.AccessToken, expiry, nil
+}
+
+func fetchMetadataToken(ctx context.Context, client *http.Client) (string, time.Time, error) {
+	url := "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	req.Header.Set("Metadata-Flavor", "Google")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("metadata server unavailable: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return "", time.Time{}, fmt.Errorf("metadata token fetch failed [%d]", resp.StatusCode)
+	}
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return "", time.Time{}, fmt.Errorf("parse metadata token response: %w", err)
+	}
+	expiry := time.Now().Add(time.Duration(tokenResp.ExpiresIn-60) * time.Second)
+	return tokenResp.AccessToken, expiry, nil
+}
+
+func rsaSign(data []byte, privateKeyPEM string) ([]byte, error) {
+	block, _ := pem.Decode([]byte(privateKeyPEM))
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM block from private key")
+	}
+	var key *rsa.PrivateKey
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		k, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		key = k
+	case "PRIVATE KEY":
+		k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		rsaKey, ok := k.(*rsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("PKCS8 key is not an RSA key")
+		}
+		key = rsaKey
+	default:
+		return nil, fmt.Errorf("unsupported PEM key type: %s", block.Type)
+	}
+	hash := sha256.Sum256(data)
+	return rsa.SignPKCS1v15(rand.Reader, key, 0x0004, hash[:]) // 0x0004 = crypto.SHA256
 }

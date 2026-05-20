@@ -3,6 +3,10 @@ package toolctl
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -265,4 +269,112 @@ func (p *fakeMetricsPublisher) First() fakePublishedMessage {
 		return fakePublishedMessage{}
 	}
 	return p.messages[0]
+}
+
+func TestNewPubSubMetricsPublisherRequiresTopic(t *testing.T) {
+	_, err := NewPubSubMetricsPublisher(PubSubMetricsPublisherOptions{})
+	if err == nil || !strings.Contains(err.Error(), "topic is required") {
+		t.Fatalf("expected topic required error, got: %v", err)
+	}
+}
+
+func TestNewPubSubMetricsPublisherRequiresProjectIDForShortTopic(t *testing.T) {
+	_, err := NewPubSubMetricsPublisher(PubSubMetricsPublisherOptions{
+		Topic: "my-topic",
+	})
+	if err == nil || !strings.Contains(err.Error(), "project_id is required") {
+		t.Fatalf("expected project_id required error, got: %v", err)
+	}
+}
+
+func TestNewPubSubMetricsPublisherFullTopicPath(t *testing.T) {
+	pub, err := NewPubSubMetricsPublisher(PubSubMetricsPublisherOptions{
+		Topic: "projects/my-project/topics/my-topic",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pub.topicPath != "projects/my-project/topics/my-topic" {
+		t.Fatalf("unexpected topicPath: %s", pub.topicPath)
+	}
+}
+
+func TestNewPubSubMetricsPublisherDecodesBase64CredentialsJSON(t *testing.T) {
+	import_b64 := "eyJ0eXBlIjoic2VydmljZV9hY2NvdW50IiwicHJvamVjdF9pZCI6InRlc3QifQ=="
+	pub, err := NewPubSubMetricsPublisher(PubSubMetricsPublisherOptions{
+		Topic:           "projects/test/topics/t",
+		CredentialsJSON: import_b64,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(pub.credentialsJSON, "{") {
+		t.Fatalf("expected decoded JSON, got: %s", pub.credentialsJSON)
+	}
+}
+
+func TestPubSubMetricsPublisherPublishesViaREST(t *testing.T) {
+	// Fake PubSub publish endpoint
+	var publishedBody map[string]any
+	pubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "Bearer test-token" {
+			http.Error(w, "unauthorized", 401)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&publishedBody)
+		fmt.Fprintf(w, `{"messageIds":["msg-1"]}`)
+	}))
+	defer pubServer.Close()
+
+	pub, err := NewPubSubMetricsPublisher(PubSubMetricsPublisherOptions{
+		Topic: "projects/test-project/topics/test-topic",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Inject pre-fetched token and redirect to local test server
+	pub.mu.Lock()
+	pub.accessToken = "test-token"
+	pub.tokenExpiry = time.Now().Add(time.Hour)
+	pub.topicPath = strings.TrimPrefix(pubServer.URL, "http://") + "/v1/projects/test-project/topics/test-topic"
+	pub.httpClient = pubServer.Client()
+	pub.mu.Unlock()
+
+	// Override publish URL to use http scheme matching test server
+	origTopicPath := pub.topicPath
+	_ = origTopicPath
+	// Directly test via a custom http round-tripper that rewrites the URL
+	pub.httpClient = &http.Client{
+		Transport: &rewriteTransport{base: pubServer.URL},
+	}
+	pub.topicPath = "projects/test-project/topics/test-topic"
+
+	_, err = pub.Publish(context.Background(), []byte(`{"hello":"world"}`), map[string]string{"k": "v"}, "")
+	if err != nil {
+		t.Fatalf("publish error: %v", err)
+	}
+	if publishedBody == nil {
+		t.Fatal("expected publish body to be received")
+	}
+	msgs, ok := publishedBody["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		t.Fatalf("expected messages in body: %#v", publishedBody)
+	}
+}
+
+type rewriteTransport struct {
+	base string
+}
+
+func (rt *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Replace https://pubsub.googleapis.com/v1 with test server base
+	newURL := strings.Replace(req.URL.String(), "https://pubsub.googleapis.com/v1", rt.base+"/v1", 1)
+	newReq, err := http.NewRequestWithContext(req.Context(), req.Method, newURL, req.Body)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range req.Header {
+		newReq.Header[k] = v
+	}
+	return http.DefaultTransport.RoundTrip(newReq)
 }
