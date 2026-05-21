@@ -3,6 +3,7 @@ package toolctl
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -814,5 +815,5 @@ func rsaSign(data []byte, privateKeyPEM string) ([]byte, error) {
 		return nil, fmt.Errorf("unsupported PEM key type: %s", block.Type)
 	}
 	hash := sha256.Sum256(data)
-	return rsa.SignPKCS1v15(rand.Reader, key, 0x0004, hash[:]) // 0x0004 = crypto.SHA256
+	return rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, hash[:])
 }
