@@ -3,7 +3,6 @@ package toolctl
 import (
 	"context"
 	"log"
-	"net/url"
 	"time"
 )
 
@@ -42,47 +41,67 @@ func (a AuthConfig) withDefaults() AuthConfig {
 	return a
 }
 
-type GatewayRegistrationResult struct {
-	Name   string
-	Status int
-	Body   any
-}
-
 type ToolSpec struct {
-	Name            string
-	Description     string
-	RequestSchema   map[string]any
-	Handler         HandlerFunc
-	StreamHandler   StreamHandlerFunc
-	Path            string
-	Method          string
-	Tags            []string
-	ResponseSchema  map[string]any
-	Headers         map[string]string
-	TimeoutMS       int
-	UpstreamBaseURL string
-	UpstreamPath    string
-	Auth            AuthConfig
-	RetryCount      int
-	RetryDelay      float64
-	VerifyTLS       bool
-	ResponseMode    string
-	ProtocolMode    string
+	Name           string
+	Description    string
+	RequestSchema  map[string]any
+	Handler        HandlerFunc
+	StreamHandler  StreamHandlerFunc
+	Path           string
+	Method         string
+	Tags           []string
+	ResponseSchema map[string]any
+	Headers        map[string]string
+	TimeoutMS      int
+	Auth           AuthConfig
+	VerifyTLS      bool
+	ResponseMode   string
+	ProtocolMode   string
 }
 
-func (s ToolSpec) Endpoint() string {
-	if s.UpstreamBaseURL == "" || s.UpstreamPath == "" {
-		return ""
+func (s ToolSpec) Manifest(serverName string) ToolManifest {
+	return ToolManifest{
+		ServerName:     serverName,
+		Name:           s.Name,
+		Description:    s.Description,
+		RequestSchema:  cloneMap(s.RequestSchema),
+		ResponseSchema: cloneMap(s.ResponseSchema),
+		Method:         s.Method,
+		Path:           s.Path,
+		Tags:           append([]string(nil), s.Tags...),
+		TimeoutMS:      s.TimeoutMS,
+		ResponseMode:   s.ResponseMode,
+		IsSSE:          s.IsSSE(),
+		ProtocolMode:   s.ProtocolMode,
 	}
-	base, err := url.Parse(s.UpstreamBaseURL)
-	if err != nil {
-		return ""
-	}
-	ref, err := url.Parse(s.UpstreamPath)
-	if err != nil {
-		return ""
-	}
-	return base.ResolveReference(ref).String()
+}
+
+func (s ToolSpec) IsSSE() bool {
+	return s.ResponseMode == "sse"
+}
+
+type ToolManifest struct {
+	ServerName     string         `json:"server_name"`
+	Name           string         `json:"name"`
+	Description    string         `json:"description"`
+	RequestSchema  map[string]any `json:"request_schema"`
+	ResponseSchema map[string]any `json:"response_schema,omitempty"`
+	Method         string         `json:"method"`
+	Path           string         `json:"path"`
+	Tags           []string       `json:"tags,omitempty"`
+	TimeoutMS      int            `json:"timeout_ms"`
+	ResponseMode   string         `json:"response_mode"`
+	IsSSE          bool           `json:"is_sse"`
+	ProtocolMode   string         `json:"protocol_mode"`
+}
+
+type ServerManifest struct {
+	ServerName  string         `json:"server_name"`
+	Title       string         `json:"title"`
+	Version     string         `json:"version"`
+	Description string         `json:"description,omitempty"`
+	BasePath    string         `json:"base_path,omitempty"`
+	Tools       []ToolManifest `json:"tools"`
 }
 
 type ToolResult struct {
@@ -109,6 +128,7 @@ type ToolOutput struct {
 
 type AppConfig struct {
 	Title       string
+	ServerName  string
 	Version     string
 	Description string
 	BasePath    string
@@ -144,79 +164,6 @@ type RegisterSSEToolOptions struct {
 	ProtocolMode  string
 }
 
-type RegisterProxyToolOptions struct {
-	Name           string
-	Description    string
-	BaseURL        string
-	Path           string
-	RequestSchema  map[string]any
-	Method         string
-	UpstreamPath   string
-	Tags           []string
-	Headers        map[string]string
-	TimeoutMS      int
-	Auth           *AuthConfig
-	RetryCount     int
-	RetryDelay     float64
-	VerifyTLS      *bool
-	ResponseMode   string
-	ProtocolMode   string
-	ResponseSchema map[string]any
-}
-
-type RegisterToolFromOpenAPIOptions struct {
-	Name         string
-	BaseURL      string
-	Spec         map[string]any
-	SpecPath     string
-	SpecURL      string
-	OperationID  string
-	Path         string
-	Method       string
-	Description  string
-	Tags         []string
-	Headers      map[string]string
-	TimeoutMS    int
-	VerifyTLS    *bool
-	Auth         *AuthConfig
-	RetryCount   int
-	RetryDelay   float64
-	ResponseMode string
-	ProtocolMode string
-}
-
-type ExportGatewayPayloadOptions struct {
-	Provider  string
-	BaseURL   string
-	Version   string
-	Category  string
-	Auth      map[string]any
-	Enabled   *bool
-	OwnerID   string
-	CreatedBy string
-	TimeoutMS *int
-	ToolNames []string
-}
-
-type RegisterToGatewayOptions struct {
-	GatewayURL     string
-	Provider       string
-	BaseURL        string
-	Version        string
-	Category       string
-	Auth           *AuthConfig
-	Enabled        *bool
-	OwnerID        string
-	CreatedBy      string
-	TimeoutMS      *int
-	ToolNames      []string
-	GatewayAuth    *AuthConfig
-	VerifyTLS      *bool
-	TimeoutSeconds float64
-	RetryCount     int
-	RetryDelay     float64
-}
-
 type EnableResourceMonitoringOptions struct {
 	Publisher          MetricsPublisher
 	Publish            PublishFn
@@ -226,20 +173,6 @@ type EnableResourceMonitoringOptions struct {
 	Labels             map[string]string
 	PublishImmediately bool
 	Logger             *log.Logger
-}
-
-type LoadOpenAPIOptions struct {
-	Spec      map[string]any
-	SpecPath  string
-	SpecURL   string
-	VerifyTLS *bool
-}
-
-type FindOpenAPIOperationOptions struct {
-	Spec        map[string]any
-	OperationID string
-	Path        string
-	Method      string
 }
 
 type CreatedOptions struct {

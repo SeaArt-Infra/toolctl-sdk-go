@@ -316,10 +316,13 @@ func (c *SystemMetricsCollector) Collect() map[string]any {
 	hostname, _ := os.Hostname()
 
 	cpuPercent := c.systemCPUPercent()
-	var memoryPercent any
-	if metrics, ok := linuxMemoryMetrics(); ok {
-		memoryPercent = metrics["used_percent"]
+	cpu := map[string]any{
+		"percent":      cpuPercent,
+		"load_average": loadAverage(),
 	}
+	memory := memoryMetrics()
+	memoryPercent := memory["used_percent"]
+	process := processMetrics(now, c.startedAt)
 
 	payload := map[string]any{
 		"id": machineID,
@@ -341,10 +344,14 @@ func (c *SystemMetricsCollector) Collect() map[string]any {
 		"cloud":            c.label([]string{"cloud"}, ""),
 		"host_id":          c.label([]string{"host_id"}, ""),
 		"partition":        c.label([]string{"partition"}, ""),
+		"cpu":              cpu,
+		"memory":           memory,
+		"process":          process,
 		"cpu_percent":      cpuPercent,
 		"memory_percent":   memoryPercent,
 		"instance_id":      c.instanceID,
 		"hostname":         hostname,
+		"labels":           cloneLabels(c.labels),
 	}
 	return payload
 }

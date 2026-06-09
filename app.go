@@ -15,6 +15,7 @@ import (
 
 type App struct {
 	title       string
+	serverName  string
 	version     string
 	description string
 	basePath    string
@@ -30,6 +31,10 @@ type App struct {
 }
 
 func Start(config AppConfig) *App {
+	serverName := config.ServerName
+	if serverName == "" {
+		serverName = config.Title
+	}
 	version := config.Version
 	if version == "" {
 		version = "0.1.0"
@@ -44,6 +49,7 @@ func Start(config AppConfig) *App {
 	}
 	return &App{
 		title:       config.Title,
+		serverName:  serverName,
 		version:     version,
 		description: config.Description,
 		basePath:    config.BasePath,
@@ -61,12 +67,63 @@ func (a *App) Title() string {
 	return a.title
 }
 
+func (a *App) ServerName() string {
+	return a.serverName
+}
+
 func (a *App) Version() string {
 	return a.version
 }
 
 func (a *App) Description() string {
 	return a.description
+}
+
+func (a *App) Tool(name string) (*ToolSpec, bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	spec, ok := a.tools[name]
+	if !ok {
+		return nil, false
+	}
+	copy := *spec
+	copy.RequestSchema = cloneMap(spec.RequestSchema)
+	copy.ResponseSchema = cloneMap(spec.ResponseSchema)
+	copy.Headers = cloneStringMap(spec.Headers)
+	copy.Tags = append([]string(nil), spec.Tags...)
+	return &copy, true
+}
+
+func (a *App) ToolManifest(name string) (ToolManifest, bool) {
+	spec, ok := a.Tool(name)
+	if !ok {
+		return ToolManifest{}, false
+	}
+	return spec.Manifest(a.serverName), true
+}
+
+func (a *App) ToolsManifest() []ToolManifest {
+	a.mu.RLock()
+	tools := make([]ToolManifest, 0, len(a.tools))
+	for _, spec := range a.tools {
+		tools = append(tools, spec.Manifest(a.serverName))
+	}
+	a.mu.RUnlock()
+	slices.SortFunc(tools, func(a, b ToolManifest) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return tools
+}
+
+func (a *App) ServerManifest() ServerManifest {
+	return ServerManifest{
+		ServerName:  a.serverName,
+		Title:       a.title,
+		Version:     a.version,
+		Description: a.description,
+		BasePath:    a.basePath,
+		Tools:       a.ToolsManifest(),
+	}
 }
 
 func (a *App) RegisterTool(opts RegisterToolOptions) (*ToolSpec, error) {
@@ -179,296 +236,6 @@ func (a *App) MustRegisterSSETool(opts RegisterSSEToolOptions) *ToolSpec {
 	return spec
 }
 
-func (a *App) RegisterProxyTool(opts RegisterProxyToolOptions) (*ToolSpec, error) {
-	responseMode := opts.ResponseMode
-	if responseMode == "" {
-		responseMode = "json"
-	}
-	protocolMode := opts.ProtocolMode
-	if protocolMode == "" {
-		protocolMode = "strict"
-	}
-	timeoutMS := opts.TimeoutMS
-	if timeoutMS == 0 {
-		timeoutMS = 30000
-	}
-	verifyTLS := true
-	if opts.VerifyTLS != nil {
-		verifyTLS = *opts.VerifyTLS
-	}
-	auth := AuthConfig{}.withDefaults()
-	if opts.Auth != nil {
-		auth = opts.Auth.withDefaults()
-	}
-	path := opts.Path
-	if path == "" {
-		path = "/tools/" + opts.Name
-	}
-	upstreamPath := opts.UpstreamPath
-	if upstreamPath == "" {
-		upstreamPath = path
-	}
-
-	if responseMode == "sse" {
-		spec, err := a.RegisterSSETool(RegisterSSEToolOptions{
-			Name:          opts.Name,
-			Description:   opts.Description,
-			RequestSchema: opts.RequestSchema,
-			Method:        opts.Method,
-			Path:          path,
-			Tags:          opts.Tags,
-			TimeoutMS:     timeoutMS,
-			Auth:          &auth,
-			ProtocolMode:  protocolMode,
-			Handler: func(ctx context.Context, payload map[string]any, writer StreamWriter) error {
-				return StreamUpstreamTool(ctx, StreamUpstreamToolOptions{
-					BaseURL:    opts.BaseURL,
-					Path:       upstreamPath,
-					Method:     opts.Method,
-					Payload:    payload,
-					Headers:    opts.Headers,
-					TimeoutMS:  timeoutMS,
-					Auth:       auth,
-					RetryCount: opts.RetryCount,
-					RetryDelay: opts.RetryDelay,
-					VerifyTLS:  verifyTLS,
-				}, func(chunk string) error {
-					return writer.Write(chunk)
-				})
-			},
-		})
-		if err != nil {
-			return nil, err
-		}
-		spec.Headers = cloneStringMap(opts.Headers)
-		spec.UpstreamBaseURL = opts.BaseURL
-		spec.UpstreamPath = upstreamPath
-		spec.RetryCount = opts.RetryCount
-		spec.RetryDelay = opts.RetryDelay
-		spec.VerifyTLS = verifyTLS
-		return spec, nil
-	}
-
-	spec, err := a.RegisterTool(RegisterToolOptions{
-		Name:           opts.Name,
-		Description:    opts.Description,
-		RequestSchema:  opts.RequestSchema,
-		Method:         opts.Method,
-		Path:           path,
-		Tags:           opts.Tags,
-		ResponseSchema: opts.ResponseSchema,
-		TimeoutMS:      timeoutMS,
-		Auth:           &auth,
-		ResponseMode:   responseMode,
-		ProtocolMode:   protocolMode,
-		Handler: func(ctx context.Context, payload map[string]any) (any, error) {
-			return CallUpstreamTool(ctx, CallUpstreamToolOptions{
-				BaseURL:    opts.BaseURL,
-				Path:       upstreamPath,
-				Method:     opts.Method,
-				Payload:    payload,
-				Headers:    opts.Headers,
-				TimeoutMS:  timeoutMS,
-				Auth:       auth,
-				RetryCount: opts.RetryCount,
-				RetryDelay: opts.RetryDelay,
-				VerifyTLS:  verifyTLS,
-			})
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	spec.Headers = cloneStringMap(opts.Headers)
-	spec.UpstreamBaseURL = opts.BaseURL
-	spec.UpstreamPath = upstreamPath
-	spec.RetryCount = opts.RetryCount
-	spec.RetryDelay = opts.RetryDelay
-	spec.VerifyTLS = verifyTLS
-	return spec, nil
-}
-
-func (a *App) MustRegisterProxyTool(opts RegisterProxyToolOptions) *ToolSpec {
-	spec, err := a.RegisterProxyTool(opts)
-	if err != nil {
-		panic(err)
-	}
-	return spec
-}
-
-func (a *App) RegisterToolFromOpenAPI(opts RegisterToolFromOpenAPIOptions) (*ToolSpec, error) {
-	openAPISpec, err := LoadOpenAPISpec(LoadOpenAPIOptions{
-		Spec:      opts.Spec,
-		SpecPath:  opts.SpecPath,
-		SpecURL:   opts.SpecURL,
-		VerifyTLS: opts.VerifyTLS,
-	})
-	if err != nil {
-		return nil, err
-	}
-	matchedPath, matchedMethod, operation, err := FindOpenAPIOperation(FindOpenAPIOperationOptions{
-		Spec:        openAPISpec,
-		OperationID: opts.OperationID,
-		Path:        opts.Path,
-		Method:      opts.Method,
-	})
-	if err != nil {
-		return nil, err
-	}
-	requestSchema := map[string]any{
-		"type":       "object",
-		"properties": map[string]any{},
-	}
-	if requestBody, ok := operation["requestBody"].(map[string]any); ok {
-		if content, ok := requestBody["content"].(map[string]any); ok {
-			if appJSON, ok := content["application/json"].(map[string]any); ok {
-				if schema, ok := appJSON["schema"].(map[string]any); ok {
-					requestSchema = schema
-				}
-			}
-		}
-	}
-	description := opts.Description
-	if description == "" {
-		if value, ok := operation["description"].(string); ok && value != "" {
-			description = value
-		} else if value, ok := operation["summary"].(string); ok && value != "" {
-			description = value
-		} else {
-			description = opts.Name
-		}
-	}
-	tags := opts.Tags
-	if len(tags) == 0 {
-		if rawTags, ok := operation["tags"].([]any); ok {
-			tags = make([]string, 0, len(rawTags))
-			for _, item := range rawTags {
-				if value, ok := item.(string); ok {
-					tags = append(tags, value)
-				}
-			}
-		}
-	}
-	return a.RegisterProxyTool(RegisterProxyToolOptions{
-		Name:          opts.Name,
-		Description:   description,
-		BaseURL:       opts.BaseURL,
-		Path:          "/tools/" + opts.Name,
-		RequestSchema: requestSchema,
-		Method:        matchedMethod,
-		UpstreamPath:  matchedPath,
-		Tags:          tags,
-		Headers:       opts.Headers,
-		TimeoutMS:     opts.TimeoutMS,
-		Auth:          opts.Auth,
-		RetryCount:    opts.RetryCount,
-		RetryDelay:    opts.RetryDelay,
-		VerifyTLS:     opts.VerifyTLS,
-		ResponseMode:  opts.ResponseMode,
-		ProtocolMode:  opts.ProtocolMode,
-	})
-}
-
-func (a *App) MustRegisterToolFromOpenAPI(opts RegisterToolFromOpenAPIOptions) *ToolSpec {
-	spec, err := a.RegisterToolFromOpenAPI(opts)
-	if err != nil {
-		panic(err)
-	}
-	return spec
-}
-
-func (a *App) ExportGatewayPayloads(opts ExportGatewayPayloadOptions) []map[string]any {
-	version := opts.Version
-	if version == "" {
-		version = "v1"
-	}
-	category := opts.Category
-	if category == "" {
-		category = "general"
-	}
-	enabled := true
-	if opts.Enabled != nil {
-		enabled = *opts.Enabled
-	}
-	filter := map[string]struct{}{}
-	if len(opts.ToolNames) > 0 {
-		for _, name := range opts.ToolNames {
-			filter[name] = struct{}{}
-		}
-	}
-
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	payloads := make([]map[string]any, 0, len(a.tools))
-	for _, spec := range a.tools {
-		if len(filter) > 0 {
-			if _, ok := filter[spec.Name]; !ok {
-				continue
-			}
-		}
-		payloads = append(payloads, BuildGatewayRegistrationPayload(*spec, BuildGatewayRegistrationPayloadOptions{
-			Provider:  opts.Provider,
-			BaseURL:   opts.BaseURL,
-			Version:   version,
-			Category:  category,
-			Auth:      opts.Auth,
-			Enabled:   enabled,
-			OwnerID:   opts.OwnerID,
-			CreatedBy: opts.CreatedBy,
-			TimeoutMS: opts.TimeoutMS,
-		}))
-	}
-	return payloads
-}
-
-func (a *App) RegisterToGateway(ctx context.Context, opts RegisterToGatewayOptions) ([]GatewayRegistrationResult, error) {
-	version := opts.Version
-	if version == "" {
-		version = "v1"
-	}
-	category := opts.Category
-	if category == "" {
-		category = "general"
-	}
-	authPayload := map[string]any{"type": "none"}
-	if opts.Auth != nil {
-		authPayload = structToMap(opts.Auth.withDefaults())
-	}
-	payloads := a.ExportGatewayPayloads(ExportGatewayPayloadOptions{
-		Provider:  opts.Provider,
-		BaseURL:   opts.BaseURL,
-		Version:   version,
-		Category:  category,
-		Auth:      authPayload,
-		Enabled:   opts.Enabled,
-		OwnerID:   opts.OwnerID,
-		CreatedBy: opts.CreatedBy,
-		TimeoutMS: opts.TimeoutMS,
-		ToolNames: opts.ToolNames,
-	})
-	verifyTLS := true
-	if opts.VerifyTLS != nil {
-		verifyTLS = *opts.VerifyTLS
-	}
-	timeoutSeconds := opts.TimeoutSeconds
-	if timeoutSeconds == 0 {
-		timeoutSeconds = 30
-	}
-	gatewayAuth := AuthConfig{}.withDefaults()
-	if opts.GatewayAuth != nil {
-		gatewayAuth = opts.GatewayAuth.withDefaults()
-	}
-	return RegisterToolsToGateway(ctx, RegisterToolsToGatewayOptions{
-		GatewayURL:     opts.GatewayURL,
-		Payloads:       payloads,
-		Auth:           gatewayAuth,
-		VerifyTLS:      verifyTLS,
-		TimeoutSeconds: timeoutSeconds,
-		RetryCount:     opts.RetryCount,
-		RetryDelay:     opts.RetryDelay,
-	})
-}
-
 func (a *App) EnableResourceMonitoring(opts EnableResourceMonitoringOptions) (*ResourceMonitor, error) {
 	labels := cloneLabels(opts.Labels)
 	instanceID := opts.InstanceID
@@ -528,6 +295,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/tools":
 		a.handleListTools(w, r)
 		return
+	case "/tool-manifest.json":
+		a.handleToolManifest(w, r)
+		return
 	case a.openAPIURL:
 		a.handleOpenAPI(w, r)
 		return
@@ -557,22 +327,14 @@ func (a *App) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (a *App) handleListTools(w http.ResponseWriter, _ *http.Request) {
-	a.mu.RLock()
-	tools := make([]map[string]any, 0, len(a.tools))
-	for _, spec := range a.tools {
-		tools = append(tools, map[string]any{
-			"name":        spec.Name,
-			"method":      spec.Method,
-			"path":        spec.Path,
-			"description": spec.Description,
-			"tags":        spec.Tags,
-		})
-	}
-	a.mu.RUnlock()
-	slices.SortFunc(tools, func(a, b map[string]any) int {
-		return strings.Compare(a["name"].(string), b["name"].(string))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"server_name": a.serverName,
+		"tools":       a.ToolsManifest(),
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"tools": tools})
+}
+
+func (a *App) handleToolManifest(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, a.ServerManifest())
 }
 
 func (a *App) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
@@ -692,12 +454,7 @@ func (a *App) handleSSETool(w http.ResponseWriter, r *http.Request, spec *ToolSp
 
 func (a *App) handleToolError(w http.ResponseWriter, spec *ToolSpec, taskID string, err error) {
 	if spec.ProtocolMode == "passthrough" {
-		status := http.StatusInternalServerError
-		switch err.(type) {
-		case *UpstreamHTTPError, *UpstreamNetworkError, *UpstreamTimeoutError, *UpstreamRequestError:
-			status = http.StatusBadGateway
-		}
-		http.Error(w, err.Error(), status)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, Failed(FailedOptions{
@@ -765,6 +522,16 @@ func (a *App) buildOpenAPI() map[string]any {
 				},
 			},
 		},
+		"/tool-manifest.json": map[string]any{
+			"get": map[string]any{
+				"tags":        []string{"system"},
+				"summary":     "Tool manifest",
+				"description": "Return server and tool metadata for SDK-registered tools",
+				"responses": map[string]any{
+					"200": map[string]any{"description": "Successful response"},
+				},
+			},
+		},
 	}
 
 	a.mu.RLock()
@@ -809,9 +576,10 @@ func (a *App) buildOpenAPI() map[string]any {
 	return map[string]any{
 		"openapi": "3.0.0",
 		"info": map[string]any{
-			"title":       a.title,
-			"version":     a.version,
-			"description": a.description,
+			"title":         a.title,
+			"version":       a.version,
+			"description":   a.description,
+			"x-server-name": a.serverName,
 		},
 		"paths": paths,
 	}
@@ -1020,8 +788,6 @@ func errorCodeFor(err error) string {
 	switch err.(type) {
 	case *ToolValidationError:
 		return "INVALID_INPUT"
-	case *UpstreamHTTPError, *UpstreamNetworkError, *UpstreamTimeoutError, *UpstreamRequestError:
-		return "UPSTREAM_REQUEST_FAILED"
 	default:
 		return "INTERNAL_ERROR"
 	}

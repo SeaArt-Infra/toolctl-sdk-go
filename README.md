@@ -11,14 +11,10 @@ Features:
 - protocol-first JSON and SSE responses
 - `RegisterTool()` for code-first tools
 - `RegisterSSETool()` for code-first SSE tools
-- `RegisterProxyTool()` for existing upstream HTTP APIs
-- `RegisterToolFromOpenAPI()` for OpenAPI / Swagger-backed tools
-- `RegisterToGateway()` to submit current tools to agent-gateway
 - built-in `/health`, `/tools`, `/openapi.json`, and `/docs`
-- gateway registration payload export
-- proxy auth, retry, and TLS controls
-- optional SSE response mode for local and proxy tools
-- optional resource heartbeat monitoring with an enable switch
+- built-in `/tool-manifest.json` for agent/skill discovery
+- optional resource heartbeat monitoring for scheduler integration
+- optional Pub/Sub publisher and Vault credential helper for scheduler metrics
 
 ## Documentation
 
@@ -61,6 +57,45 @@ func main() {
 	log.Fatal(app.Run("127.0.0.1", 8080))
 }
 ```
+
+## Tool manifest
+
+Every tool registered through the SDK is automatically added to the app registry.
+Agents and skills should read this registry instead of inferring tool behavior from
+OpenAPI, route names, or handwritten skill docs.
+
+Configure a stable server name:
+
+```go
+app := toolctl.Start(toolctl.AppConfig{
+	Title:      "Video Tools",
+	ServerName: "video-tools",
+	Version:    "0.1.0",
+})
+```
+
+Read the manifest in process:
+
+```go
+manifest, ok := app.ToolManifest("ping")
+if ok {
+	fmt.Println(manifest.ServerName)
+	fmt.Println(manifest.ResponseMode) // "json" or "sse"
+	fmt.Println(manifest.IsSSE)
+	fmt.Println(manifest.RequestSchema)
+}
+```
+
+Or over HTTP:
+
+```bash
+curl http://127.0.0.1:8080/tool-manifest.json
+```
+
+The payload includes `server_name`, tool `description`, `request_schema`,
+optional `response_schema`, `response_mode`, `is_sse`, `method`, `path`, tags,
+timeout, and protocol mode. `/tools` returns the same per-tool metadata with
+`server_name` for lightweight discovery.
 
 Call it with:
 
@@ -197,5 +232,4 @@ monitor, err := toolctl.StartResourceMonitor(context.Background(), toolctl.Start
 ## Examples
 
 - `examples/basic_app/main.go`
-- `examples/proxy_app/main.go`
 - `QUICK_TOOL_INTEGRATION.md`
