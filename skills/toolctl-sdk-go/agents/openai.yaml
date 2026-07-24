@@ -1,0 +1,4 @@
+interface:
+  display_name: "Toolctl Go SDK"
+  short_description: "Build Go HTTP tool services."
+  default_prompt: "Use $toolctl-sdk-go to build or extend a Go tool service with toolctl-sdk-go."
