@@ -16,6 +16,14 @@ Features:
 - optional resource heartbeat monitoring for scheduler integration
 - optional Pub/Sub publisher and Vault credential helper for scheduler metrics
 
+## Installation
+
+Install the current GitHub `main` revision:
+
+```bash
+go get github.com/SeaArt-Infra/toolctl-sdk-go@main
+```
+
 ## Documentation
 
 - [QUICK_TOOL_INTEGRATION.md](./QUICK_TOOL_INTEGRATION.md) - Chinese quick-start guide for exposing tools with the current SDK
@@ -30,7 +38,7 @@ import (
 	"context"
 	"log"
 
-	toolctl "toolctl-sdk-go"
+	toolctl "github.com/SeaArt-Infra/toolctl-sdk-go"
 )
 
 func main() {
@@ -240,7 +248,7 @@ monitor, err := toolctl.StartResourceMonitor(context.Background(), toolctl.Start
   data-doc-skill-id="toolctl-sdk-go"
   data-doc-skill-label="Toolctl Go SDK"
   data-doc-skill-filename="toolctl-sdk-go-SKILL.md"
-  data-doc-skill-version="1"
+  data-doc-skill-version="2"
 >
 ---
 name: toolctl-sdk-go
@@ -250,6 +258,14 @@ description: Build and extend Go HTTP tool services with toolctl-sdk-go. Use whe
 # Toolctl Go SDK
 
 Use `toolctl-sdk-go` to expose Go handlers as standard HTTP tool services. Provide a JSON Schema request body for every tool and use a stable `ServerName` for services discovered by schedulers, agents, and skills.
+
+## Install
+
+Install the current GitHub `main` revision in the consuming module:
+
+```bash
+go get github.com/SeaArt-Infra/toolctl-sdk-go@main
+```
 
 ## Create A Tool Service
 
@@ -262,7 +278,7 @@ import (
 	"context"
 	"log"
 
-	toolctl "toolctl-sdk-go"
+	toolctl "github.com/SeaArt-Infra/toolctl-sdk-go"
 )
 
 func main() {

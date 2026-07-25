@@ -7,6 +7,14 @@ description: Build and extend Go HTTP tool services with toolctl-sdk-go. Use whe
 
 Use `toolctl-sdk-go` to expose Go handlers as standard HTTP tool services. Provide a JSON Schema request body for every tool and use a stable `ServerName` for services discovered by schedulers, agents, and skills.
 
+## Install
+
+Install the current GitHub `main` revision in the consuming module:
+
+```bash
+go get github.com/SeaArt-Infra/toolctl-sdk-go@main
+```
+
 ## Create A Tool Service
 
 Create an application with `toolctl.Start` or `toolctl.CreateApp`, then register tools before calling `Run`.
@@ -18,7 +26,7 @@ import (
 	"context"
 	"log"
 
-	toolctl "toolctl-sdk-go"
+	toolctl "github.com/SeaArt-Infra/toolctl-sdk-go"
 )
 
 func main() {

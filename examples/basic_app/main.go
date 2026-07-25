@@ -4,7 +4,7 @@ import (
 	"context"
 	"log"
 
-	toolctl "toolctl-sdk-go"
+	toolctl "github.com/SeaArt-Infra/toolctl-sdk-go"
 )
 
 func main() {
