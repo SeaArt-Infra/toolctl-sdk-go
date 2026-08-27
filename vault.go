@@ -1,7 +1,6 @@
 package toolctl
 
 import (
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -24,12 +23,7 @@ func vaultError(format string, args ...any) *VaultError {
 	return &VaultError{msg: fmt.Sprintf(format, args...)}
 }
 
-var insecureHTTPClient = &http.Client{
-	Timeout: 30 * time.Second,
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: false}, //nolint:gosec
-	},
-}
+var vaultHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 func vaultRequest(rawURL, token string) (map[string]any, error) {
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
@@ -37,7 +31,7 @@ func vaultRequest(rawURL, token string) (map[string]any, error) {
 		return nil, vaultError("vault request build error: %v", err)
 	}
 	req.Header.Set("X-Vault-Token", token)
-	resp, err := insecureHTTPClient.Do(req)
+	resp, err := vaultHTTPClient.Do(req)
 	if err != nil {
 		return nil, vaultError("vault connection error: %v", err)
 	}
@@ -61,7 +55,7 @@ func renewVaultToken(vaultURL, token string) {
 	}
 	req.Header.Set("X-Vault-Token", token)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := insecureHTTPClient.Do(req)
+	resp, err := vaultHTTPClient.Do(req)
 	if err != nil {
 		return
 	}
